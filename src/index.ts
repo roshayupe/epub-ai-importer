@@ -1,4 +1,3 @@
-
 import { unzipSync, zipSync, strFromU8, strToU8 } from "fflate";
 
 type Env = {
@@ -6,14 +5,34 @@ type Env = {
   OPENAI_MODEL?: string;
 };
 
+/* =========================
+   Language support
+========================= */
+
+const SUPPORTED_LANGS = ["ru", "uk", "en"] as const;
+type Lang = (typeof SUPPORTED_LANGS)[number];
+
+function pickLang(v: unknown, fallback: Lang = "ru"): Lang {
+  const s = String(v ?? "").toLowerCase();
+  return (SUPPORTED_LANGS as readonly string[]).includes(s)
+    ? (s as Lang)
+    : fallback;
+}
+
+/* =========================
+   Utils
+========================= */
+
 function slugify(s: string) {
-  return s
-    .toLowerCase()
-    .trim()
-    .replace(/['"]/g, "")
-    .replace(/[^a-z0-9]+/g, "_")
-    .replace(/^_+|_+$/g, "")
-    .slice(0, 80) || "book";
+  return (
+    s
+      .toLowerCase()
+      .trim()
+      .replace(/['"]/g, "")
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "")
+      .slice(0, 80) || "book"
+  );
 }
 
 function stripHtml(html: string) {
@@ -36,17 +55,16 @@ function chunkWords(text: string, targetWords = 1200) {
   return chunks;
 }
 
-async function fetchWithTimeout(url: string, init: RequestInit, ms: number) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), ms);
-  try {
-    return await fetch(url, { ...init, signal: controller.signal });
-  } finally {
-    clearTimeout(timeout);
-  }
-}
+/* =========================
+   OpenAI call
+========================= */
 
-async function callOpenAIForLesson(env: Env, chunkText: string, lessonTitle: string) {
+async function callOpenAIForLesson(
+  env: Env,
+  chunkText: string,
+  lessonTitle: string,
+  translationLang: Lang
+) {
   const model = env.OPENAI_MODEL || "gpt-4.1-mini";
 
   const body = {
@@ -57,6 +75,9 @@ async function callOpenAIForLesson(env: Env, chunkText: string, lessonTitle: str
       "Use British IPA.\n" +
       "Select 25-40 useful words and a few phrases.\n" +
       "Levels: A2, B1, B1+, B2, B2+, C1, C2.\n\n" +
+      `Provide translation ONLY in ${translationLang.toUpperCase()}.\n` +
+      `Put it inside translations.${translationLang}.\n` +
+      "Do NOT output a field named 'translation'.\n\n" +
       `LESSON TITLE: ${lessonTitle}\n\nTEXT:\n${chunkText}`,
 
     text: {
@@ -78,7 +99,15 @@ async function callOpenAIForLesson(env: Env, chunkText: string, lessonTitle: str
                   ipa: { type: "string" },
                   type: { type: "string" },
                   level: { type: "string" },
-                  translation: { type: "string" },
+                  translations: {
+                    type: "object",
+                    additionalProperties: false,
+                    properties: {
+                      ru: { type: "string" },
+                      uk: { type: "string" },
+                      en: { type: "string" }
+                    }
+                  },
                   definition: { type: "string" },
                   example: { type: "string" },
                   exampleText: { type: "string" }
@@ -88,7 +117,7 @@ async function callOpenAIForLesson(env: Env, chunkText: string, lessonTitle: str
                   "ipa",
                   "type",
                   "level",
-                  "translation",
+                  "translations",
                   "definition",
                   "example",
                   "exampleText"
@@ -105,7 +134,7 @@ async function callOpenAIForLesson(env: Env, chunkText: string, lessonTitle: str
   const r = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: {
-      "Authorization": `Bearer ${env.OPENAI_API_KEY}`,
+      Authorization: `Bearer ${env.OPENAI_API_KEY}`,
       "Content-Type": "application/json"
     },
     body: JSON.stringify(body)
@@ -120,7 +149,8 @@ async function callOpenAIForLesson(env: Env, chunkText: string, lessonTitle: str
 
   const outText =
     data.output_text ??
-    data.output?.flatMap((o: any) => o.content || [])
+    data.output
+      ?.flatMap((o: any) => o.content || [])
       ?.map((c: any) => c.text || "")
       ?.join("") ??
     null;
@@ -131,6 +161,10 @@ async function callOpenAIForLesson(env: Env, chunkText: string, lessonTitle: str
 
   return JSON.parse(outText);
 }
+
+/* =========================
+   UI
+========================= */
 
 function uiHtml(workerOrigin: string) {
   return `<!doctype html>
@@ -143,7 +177,7 @@ function uiHtml(workerOrigin: string) {
 body{background:#121212;color:#eee;font-family:Arial;margin:0;padding:20px}
 h1{color:#4da3ff;margin:0 0 12px 0}
 .card{background:#1e1e1e;border-radius:14px;padding:14px;max-width:800px}
-input,button{width:100%;padding:12px;margin:8px 0;border-radius:10px;border:1px solid #333;background:#121212;color:#eee}
+input,select,button{width:100%;padding:12px;margin:8px 0;border-radius:10px;border:1px solid #333;background:#121212;color:#eee}
 button{cursor:pointer;background:#333}
 button:hover{background:#4da3ff;color:#000}
 .small{color:#aaa;font-size:13px}
@@ -157,6 +191,13 @@ button:hover{background:#4da3ff;color:#000}
   <input id="seriesTitle" placeholder="Series"/>
   <input id="bookTitle" placeholder="Book title"/>
   <input id="author" placeholder="Author"/>
+
+  <select id="translationLang">
+    <option value="ru" selected>RU — Translation</option>
+    <option value="uk">UK — Translation</option>
+    <option value="en">EN — Translation</option>
+  </select>
+
   <input id="targetWords" placeholder="Words per fragment (default 1200)" type="number"/>
   <input id="maxFragments" placeholder="Max fragments (default 3)" type="number"/>
   <input id="startFrom" placeholder="Start from fragment (default 1)" type="number"/>
@@ -169,6 +210,7 @@ button:hover{background:#4da3ff;color:#000}
 const IMPORT_URL = "${workerOrigin}/import";
 const logEl = document.getElementById("log");
 const btn = document.getElementById("btn");
+
 function log(s){ logEl.textContent = s; }
 
 btn.onclick = async () => {
@@ -181,6 +223,7 @@ btn.onclick = async () => {
     fd.append("seriesTitle", document.getElementById("seriesTitle").value || "Standalone");
     fd.append("bookTitle", document.getElementById("bookTitle").value || "");
     fd.append("author", document.getElementById("author").value || "");
+    fd.append("translationLang", document.getElementById("translationLang").value || "ru");
     fd.append("targetWords", document.getElementById("targetWords").value || "1200");
     fd.append("maxFragments", document.getElementById("maxFragments").value || "3");
     fd.append("startFrom", document.getElementById("startFrom").value || "1");
@@ -210,6 +253,10 @@ btn.onclick = async () => {
 </body></html>`;
 }
 
+/* =========================
+   Worker
+========================= */
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     try {
@@ -230,6 +277,8 @@ export default {
       if (!(file instanceof File)) {
         return new Response("Missing file", { status: 400 });
       }
+
+      const translationLang = pickLang(form.get("translationLang"), "ru");
 
       const seriesTitle = String(form.get("seriesTitle") || "Standalone");
       const bookTitle = String(form.get("bookTitle") || file.name.replace(/\.epub$/i, ""));
@@ -264,13 +313,18 @@ export default {
         const fragmentIndex = startFrom + i;
 
         try {
-            const lessonTitle = `${bookTitle} — Fragment ${fragmentIndex}`;
-            const lesson = await callOpenAIForLesson(env, chunks[i], lessonTitle);
+          const lessonTitle = `${bookTitle} — Fragment ${fragmentIndex}`;
+          const lesson = await callOpenAIForLesson(
+            env,
+            chunks[i],
+            lessonTitle,
+            translationLang
+          );
 
-            lessons.push({ index: fragmentIndex, lesson });
+          lessons.push({ index: fragmentIndex, lesson });
         } catch (e) {
-            partialError = { fragment: fragmentIndex, error: String(e) };
-            break;
+          partialError = { fragment: fragmentIndex, error: String(e) };
+          break;
         }
       }
 
