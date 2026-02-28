@@ -103,6 +103,7 @@ button:hover{background:#4da3ff;color:#000}
   <input id="author" placeholder="Author"/>
   <input id="targetWords" placeholder="Words per fragment (default 1200)" type="number"/>
   <input id="maxFragments" placeholder="Max fragments (default 3)" type="number"/>
+  <input id="startFrom" placeholder="Start from fragment (default 1)" type="number"/>
   <input id="file" type="file" accept=".epub"/>
   <button id="btn">Generate ZIP</button>
   <div class="log" id="log">Ready.</div>
@@ -126,6 +127,7 @@ btn.onclick = async () => {
     fd.append("author", document.getElementById("author").value || "");
     fd.append("targetWords", document.getElementById("targetWords").value || "1200");
     fd.append("maxFragments", document.getElementById("maxFragments").value || "3");
+    fd.append("startFrom", document.getElementById("startFrom").value || "1");
 
     log("Generating... please wait.");
     const r = await fetch(IMPORT_URL, { method:"POST", body: fd });
@@ -179,6 +181,7 @@ export default {
 
       const maxFragments = Math.max(1, Number(form.get("maxFragments") || 3));
       const targetWords = Number(form.get("targetWords") || 1200);
+      const startFrom = Math.max(1, Number(form.get("startFrom") || 1));
 
       const seriesId = slugify(seriesTitle);
       const bookId = slugify(bookTitle);
@@ -195,19 +198,23 @@ export default {
         combinedText += "\n\n" + stripHtml(strFromU8(unzipped[p]));
       }
 
-      const chunks = chunkWords(combinedText, targetWords).slice(0, maxFragments);
+      const allChunks = chunkWords(combinedText, targetWords);
+      const chunks = allChunks.slice(startFrom - 1, startFrom - 1 + maxFragments);
 
       const lessons: any[] = [];
       let partialError: any = null;
 
       for (let i = 0; i < chunks.length; i++) {
+        const fragmentIndex = startFrom + i;
+
         try {
-          const lessonTitle = `${bookTitle} — Fragment ${i + 1}`;
-          const lesson = await callOpenAIForLesson(env, chunks[i], lessonTitle);
-          lessons.push({ index: i + 1, lesson });
+            const lessonTitle = `${bookTitle} — Fragment ${fragmentIndex}`;
+            const lesson = await callOpenAIForLesson(env, chunks[i], lessonTitle);
+
+            lessons.push({ index: fragmentIndex, lesson });
         } catch (e) {
-          partialError = { fragment: i + 1, error: String(e) };
-          break;
+            partialError = { fragment: fragmentIndex, error: String(e) };
+            break;
         }
       }
 
