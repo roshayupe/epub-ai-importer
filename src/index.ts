@@ -70,10 +70,22 @@ async function callOpenAIForLesson(env: Env, chunkText: string, lessonTitle: str
     throw new Error(`OpenAI error ${r.status}: ${errText}`);
   }
 
-  const data: any = await r.json();
-  const outText = data.output_text ?? null;
-  if (!outText) throw new Error("OpenAI: missing output_text");
-  return JSON.parse(outText);
+    const data: any = await r.json();
+
+    let outText = data.output_text;
+
+    if (!outText && Array.isArray(data.output)) {
+    outText = data.output
+        .flatMap((o: any) => o.content || [])
+        .map((c: any) => c.text || "")
+        .join("");
+    }
+
+    if (!outText) {
+    throw new Error("OpenAI: no usable text in response");
+    }
+
+    return JSON.parse(outText);
 }
 
 function uiHtml(workerOrigin: string) {
