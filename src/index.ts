@@ -119,7 +119,7 @@ async function callOpenAIForLesson(
                   "ipa",
                   "type",
                   "level",
-                  "translations: translationsSchema,",
+                  "translations",
                   "definition",
                   "example",
                   "exampleText"
