@@ -67,6 +67,16 @@ async function callOpenAIForLesson(
 ) {
   const model = env.OPENAI_MODEL || "gpt-4.1-mini";
 
+
+    const translationsSchema = {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+        [translationLang]: { type: "string" }
+    },
+    required: [translationLang]
+    };
+
   const body = {
     model,
     input:
@@ -99,15 +109,7 @@ async function callOpenAIForLesson(
                   ipa: { type: "string" },
                   type: { type: "string" },
                   level: { type: "string" },
-                  translations: {
-                    type: "object",
-                    additionalProperties: false,
-                    properties: {
-                      ru: { type: "string" },
-                      uk: { type: "string" },
-                      en: { type: "string" }
-                    }
-                  },
+                  translations: translationsSchema,
                   definition: { type: "string" },
                   example: { type: "string" },
                   exampleText: { type: "string" }
@@ -117,7 +119,7 @@ async function callOpenAIForLesson(
                   "ipa",
                   "type",
                   "level",
-                  "translations",
+                  "translations: translationsSchema,",
                   "definition",
                   "example",
                   "exampleText"
