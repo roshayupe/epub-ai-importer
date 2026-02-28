@@ -52,51 +52,84 @@ async function callOpenAIForLesson(env: Env, chunkText: string, lessonTitle: str
   const body = {
     model,
     input:
-      "Return ONLY valid JSON with title and words array.\n\n" +
-      `LESSON TITLE: ${lessonTitle}\n\nTEXT:\n${chunkText}`
+      "You are a vocabulary extractor for English learners.\n" +
+      "Return ONLY JSON that matches the schema.\n" +
+      "Use British IPA.\n" +
+      "Select 25-40 useful words and a few phrases.\n" +
+      "Levels: A2, B1, B1+, B2, B2+, C1, C2.\n\n" +
+      `LESSON TITLE: ${lessonTitle}\n\nTEXT:\n${chunkText}`,
+
+    text: {
+      format: {
+        type: "json_schema",
+        name: "lesson_schema",
+        schema: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            title: { type: "string" },
+            words: {
+              type: "array",
+              items: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  word: { type: "string" },
+                  ipa: { type: "string" },
+                  type: { type: "string" },
+                  level: { type: "string" },
+                  translation: { type: "string" },
+                  definition: { type: "string" },
+                  example: { type: "string" },
+                  exampleText: { type: "string" }
+                },
+                required: [
+                  "word",
+                  "ipa",
+                  "type",
+                  "level",
+                  "translation",
+                  "definition",
+                  "example",
+                  "exampleText"
+                ]
+              }
+            }
+          },
+          required: ["title", "words"]
+        }
+      }
+    }
   };
 
-  const r = await fetchWithTimeout("https://api.openai.com/v1/responses", {
+  const r = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: {
       "Authorization": `Bearer ${env.OPENAI_API_KEY}`,
       "Content-Type": "application/json"
     },
     body: JSON.stringify(body)
-  }, 65000);
+  });
 
   if (!r.ok) {
     const errText = await r.text();
     throw new Error(`OpenAI error ${r.status}: ${errText}`);
   }
 
-    const data: any = await r.json();
+  const data: any = await r.json();
 
-    let outText = data.output_text;
+  const outText =
+    data.output_text ??
+    data.output?.flatMap((o: any) => o.content || [])
+      ?.map((c: any) => c.text || "")
+      ?.join("") ??
+    null;
 
-    if (!outText && Array.isArray(data.output)) {
-    outText = data.output
-        .flatMap((o: any) => o.content || [])
-        .map((c: any) => c.text || "")
-        .join("");
-    }
+  if (!outText) {
+    throw new Error("OpenAI: no structured output");
+  }
 
-    if (!outText) {
-    throw new Error("OpenAI: no usable text in response");
-    }
-
-    // 🔥 Удаляем markdown-обёртку
-    outText = outText.trim();
-
-    if (outText.startsWith("```")) {
-    outText = outText
-        .replace(/^```json/i, "")
-        .replace(/^```/, "")
-        .replace(/```$/, "")
-        .trim();
-    }
-
-    return JSON.parse(outText);
+  return JSON.parse(outText);
 }
 
 function uiHtml(workerOrigin: string) {
