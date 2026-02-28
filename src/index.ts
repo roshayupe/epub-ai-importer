@@ -85,6 +85,17 @@ async function callOpenAIForLesson(env: Env, chunkText: string, lessonTitle: str
     throw new Error("OpenAI: no usable text in response");
     }
 
+    // 🔥 Удаляем markdown-обёртку
+    outText = outText.trim();
+
+    if (outText.startsWith("```")) {
+    outText = outText
+        .replace(/^```json/i, "")
+        .replace(/^```/, "")
+        .replace(/```$/, "")
+        .trim();
+    }
+
     return JSON.parse(outText);
 }
 
