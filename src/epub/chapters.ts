@@ -12,27 +12,34 @@ export interface Chapter {
 }
 
 /**
- * Extract ordered chapters with cleaned text and detected titles.
+ * Extract ordered chapters from EPUB spine.
+ * Filters out small non-content documents (dedication, toc, etc.)
  */
 export function extractChapters(
-  unzipped: Record<string, Uint8Array>
+  unzipped: Record<string, Uint8Array>,
+  minWordThreshold: number = 200
 ): Chapter[] {
-  const spineFiles = extractSpineHtmlFiles(unzipped);
 
+  const spineFiles = extractSpineHtmlFiles(unzipped);
   const chapters: Chapter[] = [];
 
-  spineFiles.forEach((filePath, i) => {
+  spineFiles.forEach((filePath) => {
     const rawHtml = strFromU8(unzipped[filePath]);
 
     const title =
       extractHeading(rawHtml) ||
       deriveTitleFromFilename(filePath) ||
-      `Chapter ${i + 1}`;
+      `Chapter ${chapters.length + 1}`;
 
     const text = stripHtml(rawHtml);
 
+    const wordCount = text.split(/\s+/).filter(Boolean).length;
+
+    // Skip non-content files
+    if (wordCount < minWordThreshold) return;
+
     chapters.push({
-      index: i + 1,
+      index: chapters.length + 1, // reindex AFTER filtering
       sourceFile: filePath,
       title,
       text
