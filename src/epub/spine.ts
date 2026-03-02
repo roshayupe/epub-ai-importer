@@ -74,5 +74,20 @@ function resolveRelativePath(opfPath: string, href: string): string {
     0,
     opfPath.lastIndexOf("/") + 1
   );
-  return opfDir + href;
+
+  const fullPath = opfDir + href;
+
+  // Normalize "../" segments
+  const parts = fullPath.split("/");
+  const resolved: string[] = [];
+
+  for (const part of parts) {
+    if (part === "..") {
+      resolved.pop();
+    } else if (part !== ".") {
+      resolved.push(part);
+    }
+  }
+
+  return resolved.join("/");
 }
