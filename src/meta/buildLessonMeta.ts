@@ -1,9 +1,9 @@
 import {
-  computeLevelDistribution,
-  computeDifficultyScore,
+  computeDistribution,
+  computeScore,
   scoreToLevel,
   LevelDistribution
-} from "../stats/levelDistribution";
+} from "../stats/scoring";
 
 /**
  * Basic word entry structure expected from OpenAI.
@@ -51,10 +51,10 @@ export function buildLessonWithMeta(params: {
 
   // Compute CEFR distribution
   const levelDistribution: LevelDistribution =
-    computeLevelDistribution(words);
+    computeDistribution(words);
 
   // Compute weighted difficulty score
-  const score = computeDifficultyScore(levelDistribution);
+  const score = computeScore(levelDistribution);
 
   const derivedLevel = scoreToLevel(score);
 
