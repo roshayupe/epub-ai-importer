@@ -35,12 +35,25 @@ export function extractSpineHtmlFiles(
   // 3. Build manifest map: id -> resolved file path
   const manifestMap: Record<string, string> = {};
 
-  const itemRegex =
-    /<item\s+[^>]*id="([^"]+)"[^>]*href="([^"]+)"[^>]*>/gi;
+  const itemRegex = /<item\b[^>]*>/gi;
 
-  let itemMatch;
+  let itemMatch: RegExpExecArray | null;
+
   while ((itemMatch = itemRegex.exec(opfXml)) !== null) {
-    const [, id, href] = itemMatch;
+    const itemTag = itemMatch[0];
+
+    const idMatch = itemTag.match(/id="([^"]+)"/i);
+    const hrefMatch = itemTag.match(/href="([^"]+)"/i);
+    const mediaMatch = itemTag.match(/media-type="([^"]+)"/i);
+
+    if (!idMatch || !hrefMatch) continue;
+
+    const id = idMatch[1];
+    const href = hrefMatch[1];
+    const mediaType = mediaMatch?.[1] ?? "";
+
+    if (!/xhtml|html/i.test(mediaType)) continue;
+
     manifestMap[id] = resolveRelativePath(opfPath, href);
   }
 
