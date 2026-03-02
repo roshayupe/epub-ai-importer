@@ -88,6 +88,18 @@ export default {
          */
         const chapters = extractChapters(archive);
 
+        console.log("Total chapters detected:", chapters.length);
+
+        console.log(
+          "Chapter indices:",
+          chapters.map(c => c.index)
+        );
+
+        console.log(
+          "Chapter titles:",
+          chapters.map(c => c.title)
+        );
+
         const selectedChapters = chapters.filter(ch =>
           ch.index >= startChapter &&
           (endChapter ? ch.index <= endChapter : true)
