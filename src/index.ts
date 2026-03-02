@@ -1,357 +1,183 @@
-import { unzipSync, zipSync, strFromU8, strToU8 } from "fflate";
+import type { Env } from "./types";
 
-type Env = {
-  OPENAI_API_KEY: string;
-  OPENAI_MODEL?: string;
-};
+import { uiHtml } from "./ui/uiHtml";
 
-/* =========================
-   Language support
-========================= */
+import { unzipEpubFile } from "./epub/unzip";
+import { extractChapters } from "./epub/chapters";
+import { splitChapterBalanced } from "./epub/balance";
+import { zipJsonFiles } from "./epub/zip";
 
-const SUPPORTED_LANGS = ["ru", "uk", "en"] as const;
-type Lang = (typeof SUPPORTED_LANGS)[number];
+import { callOpenAIForLesson } from "./openai/callOpenAI";
+import { buildLessonWithMeta } from "./meta/buildLessonMeta";
 
-function pickLang(v: unknown, fallback: Lang = "ru"): Lang {
-  const s = String(v ?? "").toLowerCase();
-  return (SUPPORTED_LANGS as readonly string[]).includes(s)
-    ? (s as Lang)
-    : fallback;
-}
+import { slugify } from "./utils/slugify";
+import { pickLang } from "./utils/lang";
 
-/* =========================
-   Utils
-========================= */
-
-function slugify(s: string) {
-  return (
-    s
-      .toLowerCase()
-      .trim()
-      .replace(/['"]/g, "")
-      .replace(/[^a-z0-9]+/g, "_")
-      .replace(/^_+|_+$/g, "")
-      .slice(0, 80) || "book"
-  );
-}
-
-function stripHtml(html: string) {
-  return html
-    .replace(/<script[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style[\s\S]*?<\/style>/gi, " ")
-    .replace(/<\/(p|div|br|li|h1|h2|h3|h4|h5|h6)>/gi, "\n")
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function chunkWords(text: string, targetWords = 1200) {
-  const words = text.split(/\s+/).filter(Boolean);
-  const chunks: string[] = [];
-  for (let i = 0; i < words.length; i += targetWords) {
-    chunks.push(words.slice(i, i + targetWords).join(" "));
-  }
-  return chunks;
-}
-
-/* =========================
-   OpenAI call
-========================= */
-
-async function callOpenAIForLesson(
-  env: Env,
-  chunkText: string,
-  lessonTitle: string,
-  translationLang: Lang
-) {
-  const model = env.OPENAI_MODEL || "gpt-4.1-mini";
-
-
-    const translationsSchema = {
-    type: "object",
-    additionalProperties: false,
-    properties: {
-        [translationLang]: { type: "string" }
-    },
-    required: [translationLang]
-    };
-
-  const body = {
-    model,
-    input:
-      "You are a vocabulary extractor for English learners.\n" +
-      "Return ONLY JSON that matches the schema.\n" +
-      "Use British IPA.\n" +
-      "Select 25-40 useful words and a few phrases.\n" +
-      "Levels: A2, B1, B1+, B2, B2+, C1, C2.\n\n" +
-      `Provide translation ONLY in ${translationLang.toUpperCase()}.\n` +
-      `Put it inside translations.${translationLang}.\n` +
-      "Do NOT output a field named 'translation'.\n\n" +
-      `LESSON TITLE: ${lessonTitle}\n\nTEXT:\n${chunkText}`,
-
-    text: {
-      format: {
-        type: "json_schema",
-        name: "lesson_schema",
-        schema: {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-            title: { type: "string" },
-            words: {
-              type: "array",
-              items: {
-                type: "object",
-                additionalProperties: false,
-                properties: {
-                  word: { type: "string" },
-                  ipa: { type: "string" },
-                  type: { type: "string" },
-                  level: { type: "string" },
-                  translations: translationsSchema,
-                  definition: { type: "string" },
-                  example: { type: "string" },
-                  exampleText: { type: "string" }
-                },
-                required: [
-                  "word",
-                  "ipa",
-                  "type",
-                  "level",
-                  "translations",
-                  "definition",
-                  "example",
-                  "exampleText"
-                ]
-              }
-            }
-          },
-          required: ["title", "words"]
-        }
-      }
-    }
-  };
-
-  const r = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${env.OPENAI_API_KEY}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify(body)
-  });
-
-  if (!r.ok) {
-    const errText = await r.text();
-    throw new Error(`OpenAI error ${r.status}: ${errText}`);
-  }
-
-  const data: any = await r.json();
-
-  const outText =
-    data.output_text ??
-    data.output
-      ?.flatMap((o: any) => o.content || [])
-      ?.map((c: any) => c.text || "")
-      ?.join("") ??
-    null;
-
-  if (!outText) {
-    throw new Error("OpenAI: no structured output");
-  }
-
-  return JSON.parse(outText);
-}
-
-/* =========================
-   UI
-========================= */
-
-function uiHtml(workerOrigin: string) {
-  return `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>EPUB Importer</title>
-<style>
-body{background:#121212;color:#eee;font-family:Arial;margin:0;padding:20px}
-h1{color:#4da3ff;margin:0 0 12px 0}
-.card{background:#1e1e1e;border-radius:14px;padding:14px;max-width:800px}
-input,select,button{width:100%;padding:12px;margin:8px 0;border-radius:10px;border:1px solid #333;background:#121212;color:#eee}
-button{cursor:pointer;background:#333}
-button:hover{background:#4da3ff;color:#000}
-.small{color:#aaa;font-size:13px}
-.log{white-space:pre-wrap;background:#121212;border:1px solid #333;border-radius:10px;padding:12px;margin-top:10px}
-</style>
-</head>
-<body>
-<h1>EPUB → Lesson JSON (ZIP)</h1>
-<div class="card">
-  <div class="small">Generates lesson ZIP from EPUB.</div>
-  <input id="seriesTitle" placeholder="Series"/>
-  <input id="bookTitle" placeholder="Book title"/>
-  <input id="author" placeholder="Author"/>
-
-  <select id="translationLang">
-    <option value="ru" selected>RU — Translation</option>
-    <option value="uk">UK — Translation</option>
-    <option value="en">EN — Translation</option>
-  </select>
-
-  <input id="targetWords" placeholder="Words per fragment (default 1200)" type="number"/>
-  <input id="maxFragments" placeholder="Max fragments (default 3)" type="number"/>
-  <input id="startFrom" placeholder="Start from fragment (default 1)" type="number"/>
-  <input id="file" type="file" accept=".epub"/>
-  <button id="btn">Generate ZIP</button>
-  <div class="log" id="log">Ready.</div>
-</div>
-
-<script>
-const IMPORT_URL = "${workerOrigin}/import";
-const logEl = document.getElementById("log");
-const btn = document.getElementById("btn");
-
-function log(s){ logEl.textContent = s; }
-
-btn.onclick = async () => {
-  try{
-    const f = document.getElementById("file").files[0];
-    if(!f){ log("Choose .epub file first."); return; }
-
-    const fd = new FormData();
-    fd.append("file", f);
-    fd.append("seriesTitle", document.getElementById("seriesTitle").value || "Standalone");
-    fd.append("bookTitle", document.getElementById("bookTitle").value || "");
-    fd.append("author", document.getElementById("author").value || "");
-    fd.append("translationLang", document.getElementById("translationLang").value || "ru");
-    fd.append("targetWords", document.getElementById("targetWords").value || "1200");
-    fd.append("maxFragments", document.getElementById("maxFragments").value || "3");
-    fd.append("startFrom", document.getElementById("startFrom").value || "1");
-
-    log("Generating... please wait.");
-    const r = await fetch(IMPORT_URL, { method:"POST", body: fd });
-
-    if(!r.ok){
-      const t = await r.text();
-      log("Error: " + t);
-      return;
-    }
-
-    const blob = await r.blob();
-    const a = document.createElement("a");
-    const url = URL.createObjectURL(blob);
-    a.href = url;
-    a.download = "import.zip";
-    a.click();
-    URL.revokeObjectURL(url);
-    log("Done. ZIP downloaded.");
-  }catch(e){
-    log("Failed: " + e);
-  }
-};
-</script>
-</body></html>`;
-}
-
-/* =========================
-   Worker
-========================= */
-
+/**
+ * Cloudflare Worker entry point.
+ */
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     try {
       const url = new URL(request.url);
 
+      /**
+       * Serve UI on GET /
+       */
       if (request.method === "GET" && url.pathname === "/") {
         return new Response(uiHtml(url.origin), {
-          headers: { "Content-Type": "text/html; charset=utf-8" }
+          headers: {
+            "Content-Type": "text/html; charset=utf-8"
+          }
         });
       }
 
-      if (request.method !== "POST" || url.pathname !== "/import") {
-        return new Response("Not found", { status: 404 });
-      }
+      /**
+       * Handle EPUB import on POST /import
+       */
+      if (request.method === "POST" && url.pathname === "/import") {
 
-      const form = await request.formData();
-      const file = form.get("file");
-      if (!(file instanceof File)) {
-        return new Response("Missing file", { status: 400 });
-      }
+        const form = await request.formData();
+        const file = form.get("file");
 
-      const translationLang = pickLang(form.get("translationLang"), "ru");
+        if (!(file instanceof File)) {
+          return new Response("Missing file", { status: 400 });
+        }
 
-      const seriesTitle = String(form.get("seriesTitle") || "Standalone");
-      const bookTitle = String(form.get("bookTitle") || file.name.replace(/\.epub$/i, ""));
-      const author = String(form.get("author") || "Unknown");
+        const translationLang = pickLang(
+          form.get("translationLang"),
+          "ru"
+        );
 
-      const maxFragments = Math.max(1, Number(form.get("maxFragments") || 3));
-      const targetWords = Number(form.get("targetWords") || 1200);
-      const startFrom = Math.max(1, Number(form.get("startFrom") || 1));
+        const seriesTitle = String(
+          form.get("seriesTitle") || "Standalone"
+        );
 
-      const seriesId = slugify(seriesTitle);
-      const bookId = slugify(bookTitle);
+        const bookTitle = String(
+          form.get("bookTitle") ||
+            file.name.replace(/\.epub$/i, "")
+        );
 
-      const epubBytes = new Uint8Array(await file.arrayBuffer());
-      const unzipped = unzipSync(epubBytes);
+        const author = String(
+          form.get("author") || "Unknown"
+        );
 
-      const htmlFiles = Object.keys(unzipped).filter(p =>
-        /\.(xhtml|html|htm)$/i.test(p)
-      );
+        const targetWords = Number(
+          form.get("targetWords") || 1000
+        );
 
-      let combinedText = "";
-      for (const p of htmlFiles) {
-        combinedText += "\n\n" + stripHtml(strFromU8(unzipped[p]));
-      }
+        const startChapter = Math.max(
+          1,
+          Number(form.get("startChapter") || 1)
+        );
 
-      const allChunks = chunkWords(combinedText, targetWords);
-      const chunks = allChunks.slice(startFrom - 1, startFrom - 1 + maxFragments);
+        const endChapterRaw = form.get("endChapter");
+        const endChapter = endChapterRaw
+          ? Math.max(startChapter, Number(endChapterRaw))
+          : undefined;
 
-      const lessons: any[] = [];
-      let partialError: any = null;
+        const bookId = slugify(bookTitle);
 
-      for (let i = 0; i < chunks.length; i++) {
-        const fragmentIndex = startFrom + i;
+        /**
+         * 1️⃣ Unzip EPUB
+         */
+        const archive = await unzipEpubFile(file);
 
-        try {
-          const lessonTitle = `${bookTitle} — Fragment ${fragmentIndex}`;
-          const lesson = await callOpenAIForLesson(
-            env,
-            chunks[i],
-            lessonTitle,
-            translationLang
+        /**
+         * 2️⃣ Extract chapters
+         */
+        const chapters = extractChapters(archive);
+
+        const selectedChapters = chapters.filter(ch =>
+          ch.index >= startChapter &&
+          (endChapter ? ch.index <= endChapter : true)
+        );
+
+        if (selectedChapters.length === 0) {
+          return new Response(
+            "No chapters selected",
+            { status: 400 }
+          );
+        }
+
+        const outputFiles: Record<string, unknown> = {};
+
+        /**
+         * 3️⃣ Process selected chapters
+         */
+        for (const chapter of selectedChapters) {
+
+          const fragments = splitChapterBalanced(
+            chapter.text,
+            targetWords
           );
 
-          lessons.push({ index: fragmentIndex, lesson });
-        } catch (e) {
-          partialError = { fragment: fragmentIndex, error: String(e) };
-          break;
+          for (let i = 0; i < fragments.length; i++) {
+
+            const fragmentText = fragments[i];
+
+            const lessonTitle =
+              `${bookTitle} — ${chapter.title} ` +
+              `(Fragment ${i + 1})`;
+
+            /**
+             * 4️⃣ Call OpenAI for lexical profile
+             */
+            const lesson = await callOpenAIForLesson(
+              env,
+              fragmentText,
+              lessonTitle,
+              translationLang
+            );
+
+            /**
+             * 5️⃣ Attach structured meta
+             */
+            const finalLesson = buildLessonWithMeta({
+              lessonTitle,
+              bookId,
+              bookTitle,
+              author,
+              chapterIndex: chapter.index,
+              chapterTitle: chapter.title,
+              sourceFile: chapter.sourceFile,
+              fragmentIndexInChapter: i + 1,
+              totalFragmentsInChapter: fragments.length,
+              sourceText: fragmentText,
+              words: lesson.words
+            });
+
+            const fileName =
+              `${bookId}_ch${chapter.index}_f${i + 1}.json`;
+
+            outputFiles[fileName] = finalLesson;
+          }
         }
+
+        /**
+         * 6️⃣ Zip results
+         */
+        const zipped = zipJsonFiles(outputFiles);
+
+        return new Response(zipped, {
+          headers: {
+            "Content-Type": "application/zip",
+            "Content-Disposition":
+              `attachment; filename="${bookId}.zip"`
+          }
+        });
       }
 
-      const zipFiles: Record<string, Uint8Array> = {};
+      /**
+       * Fallback for unknown routes
+       */
+      return new Response("Not found", { status: 404 });
 
-      for (const x of lessons) {
-        zipFiles[`lesson_${x.index}.json`] = strToU8(JSON.stringify(x.lesson, null, 2));
-      }
-
-      if (partialError) {
-        zipFiles["import_error.json"] = strToU8(JSON.stringify(partialError, null, 2));
-      }
-
-      const zipped = zipSync(zipFiles, { level: 6 });
-
-      return new Response(zipped, {
-        status: partialError ? 206 : 200,
-        headers: {
-          "Content-Type": "application/zip",
-          "Content-Disposition": `attachment; filename="${seriesId}_${bookId}.zip"`
-        }
-      });
-
-    } catch (e: any) {
-      return new Response(`Importer error: ${e?.message || String(e)}`, { status: 500 });
+    } catch (err: any) {
+      return new Response(
+        `Importer error: ${err?.message || err}`,
+        { status: 500 }
+      );
     }
   }
 };
