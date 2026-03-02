@@ -96,9 +96,10 @@ function stripHtml(html: string): string {
   return html
     .replace(/<script[\s\S]*?<\/script>/gi, " ")
     .replace(/<style[\s\S]*?<\/style>/gi, " ")
-    .replace(/<\/(p|div|br|li|h1|h2|h3|h4|h5|h6)>/gi, "\n")
+    .replace(/<\/(p|div|li|h1|h2|h3|h4|h5|h6)>/gi, "\n\n")
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<[^>]+>/g, " ")
-    .replace(/\s+/g, " ")
+    .replace(/[ \t]+/g, " ")          // collapse spaces only
+    .replace(/\n{3,}/g, "\n\n")       // normalize excessive breaks
     .trim();
 }
